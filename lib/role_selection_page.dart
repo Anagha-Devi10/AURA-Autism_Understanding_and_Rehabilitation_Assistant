@@ -226,7 +226,7 @@ class RoleSelectionPage extends StatelessWidget {
     if (title == "Therapist") {
       Navigator.push(
         context,
-        MaterialPageRoute(builder: (context) => const TherapistLoginPage()),
+        MaterialPageRoute(builder: (context) => TherapistLoginPage()),
       );
     }
     // Later you can add Therapist and Admin navigation similarly

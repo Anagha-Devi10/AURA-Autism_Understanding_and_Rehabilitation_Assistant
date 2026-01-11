@@ -1,8 +1,15 @@
+// Therapist Dashboard Page
 import 'package:flutter/material.dart';
 import 'recommendation_page.dart';
 
+// Import new pages
+import 'student_profiles_page.dart';
+import 'therapy_management_page.dart';
+import 'assessment_page.dart';
+
 class TherapistDashboard extends StatelessWidget {
-  const TherapistDashboard({super.key});
+  final String? therapistId;
+  const TherapistDashboard({super.key, this.therapistId});
 
   @override
   Widget build(BuildContext context) {
@@ -48,7 +55,6 @@ class TherapistDashboard extends StatelessWidget {
                 
                 const Spacer(),
                 
-                // Management Cards
                 _buildOptionCard(
                   context,
                   icon: Icons.people_rounded,
@@ -56,9 +62,14 @@ class TherapistDashboard extends StatelessWidget {
                   subtitle: "View and manage student information",
                   colors: [const Color(0xFFE91E63), const Color(0xFFAD1457)],
                   onTap: () {
-                    // TODO: Navigate to student profiles
+                    final int tid = therapistId != null ? (int.tryParse(therapistId!) ?? 0) : 0;
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => StudentProfilesPage(therapistId: tid)),
+                    );
                   },
                 ),
+                
                 
                 const SizedBox(height: 20),
                 
@@ -69,7 +80,11 @@ class TherapistDashboard extends StatelessWidget {
                   subtitle: "Schedule and track therapy sessions",
                   colors: [const Color(0xFF2196F3), const Color(0xFF1565C0)],
                   onTap: () {
-                    // TODO: Navigate to therapy management
+                    final int tid = therapistId != null ? (int.tryParse(therapistId!) ?? 0) : 0;
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => TherapyManagementPage(therapistId: tid)),
+                    );
                   },
                 ),
                 
@@ -82,7 +97,10 @@ class TherapistDashboard extends StatelessWidget {
                   subtitle: "Review test results and create plans",
                   colors: [const Color(0xFF9C27B0), const Color(0xFF6A1B9A)],
                   onTap: () {
-                    // TODO: Navigate to assessments
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (context) => const AssessmentPage()),
+                    );
                   },
                 ),
                 
@@ -95,7 +113,6 @@ class TherapistDashboard extends StatelessWidget {
                   subtitle: "AI-powered therapy recommendations",
                   colors: [const Color(0xFFFF9800), const Color(0xFFE65100)],
                   onTap: () {
-                    // TODO: Navigate to AI assistant
                     Navigator.pushReplacement(
                       context,
                       MaterialPageRoute(

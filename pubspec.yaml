@@ -10,8 +10,11 @@ environment:
 
 dependencies:
   http: ^1.2.0
+  file_picker: ^8.0.0
+  video_player: ^2.8.6
   flutter:
     sdk: flutter
+    
 
   cupertino_icons: ^1.0.6
 

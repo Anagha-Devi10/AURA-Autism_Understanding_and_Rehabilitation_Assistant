@@ -1,8 +1,51 @@
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'parent_home_page.dart';
+import 'parent_register_page.dart';
 
-class ParentLoginPage extends StatelessWidget {
+
+class ParentLoginPage extends StatefulWidget {
   const ParentLoginPage({super.key});
+
+  @override
+  State<ParentLoginPage> createState() => _ParentLoginPageState();
+}
+
+class _ParentLoginPageState extends State<ParentLoginPage> {
+  final emailController = TextEditingController();
+  final passwordController = TextEditingController();
+
+  static const String baseUrl = "http://localhost:5000";
+
+
+  Future<void> login() async {
+    try {
+      final response = await http.post(
+        Uri.parse("$baseUrl/login"),
+        headers: {"Content-Type": "application/json"},
+        body: jsonEncode({
+          "email": emailController.text,
+          "password": passwordController.text,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => const ParentHomePage()),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Invalid email or password")),
+        );
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Server error: $e")),
+      );
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -12,7 +55,11 @@ class ParentLoginPage extends StatelessWidget {
           gradient: LinearGradient(
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
-            colors: [Color(0xFF1a1a2e), Color(0xFF16213e), Color(0xFF0f0f23)],
+            colors: [
+              Color(0xFF1a1a2e),
+              Color(0xFF16213e),
+              Color(0xFF0f0f23)
+            ],
           ),
         ),
         child: Center(
@@ -29,8 +76,12 @@ class ParentLoginPage extends StatelessWidget {
                     color: Colors.white,
                   ),
                 ),
+
                 const SizedBox(height: 30),
+
                 TextField(
+                  controller: emailController,
+                  style: const TextStyle(color: Colors.white),
                   decoration: InputDecoration(
                     filled: true,
                     fillColor: Colors.white.withOpacity(0.1),
@@ -40,11 +91,14 @@ class ParentLoginPage extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  style: const TextStyle(color: Colors.white),
                 ),
+
                 const SizedBox(height: 20),
+
                 TextField(
+                  controller: passwordController,
                   obscureText: true,
+                  style: const TextStyle(color: Colors.white),
                   decoration: InputDecoration(
                     filled: true,
                     fillColor: Colors.white.withOpacity(0.1),
@@ -54,9 +108,10 @@ class ParentLoginPage extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                     ),
                   ),
-                  style: const TextStyle(color: Colors.white),
                 ),
+
                 const SizedBox(height: 30),
+
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.deepPurple,
@@ -66,16 +121,32 @@ class ParentLoginPage extends StatelessWidget {
                       borderRadius: BorderRadius.circular(20),
                     ),
                   ),
-                  onPressed: () {
-                    Navigator.pushReplacement(
-                      context,
-                      MaterialPageRoute(
-                          builder: (context) => const ParentHomePage()),
-                    );
-                  },
+                  onPressed: login,
                   child: const Text(
                     "Login",
                     style: TextStyle(fontSize: 18, color: Colors.white),
+                  ),
+                ),
+
+                const SizedBox(height: 15),
+
+                // 👇 NEW REGISTER OPTION
+                TextButton(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const ParentRegisterPage(),
+                      ),
+                    );
+                  },
+                  child: const Text(
+                    "New user? Register here",
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
+                      decoration: TextDecoration.underline,
+                    ),
                   ),
                 ),
               ],

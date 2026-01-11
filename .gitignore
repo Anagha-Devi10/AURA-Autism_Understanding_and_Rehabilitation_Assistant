@@ -43,3 +43,20 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Ignore Python Virtual Environment
+backend/.venv/
+.venv/
+__pycache__/
+
+# Ignore VS Code settings
+.vscode/
+
+# Ignore sensitive/personal data
+*.pdf
+*.jpg
+*.mp4
+AV-ASD/
+
+# Ignore compiled binary folders if any
+build/

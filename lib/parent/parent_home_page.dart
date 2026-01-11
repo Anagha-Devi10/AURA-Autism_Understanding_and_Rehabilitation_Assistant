@@ -23,12 +23,12 @@ class ParentHomePage extends StatelessWidget {
             child: Column(
               children: [
                 // Header
-                const SizedBox(height: 40),
+                SizedBox(height: 40),
                 ShaderMask(
                   shaderCallback: (bounds) => const LinearGradient(
                     colors: [Color(0xFF7B42F6), Color(0xFFB01EFF), Color(0xFF42A5F5)],
                   ).createShader(bounds),
-                  child: const Text(
+                  child: Text(
                     "Parent Dashboard",
                     style: TextStyle(
                       fontSize: 32,
@@ -48,7 +48,7 @@ class ParentHomePage extends StatelessWidget {
                   ),
                 ),
                 
-                const Spacer(),
+                Spacer(),
                 
                 // Assessment Cards
                 _buildOptionCard(
@@ -56,33 +56,33 @@ class ParentHomePage extends StatelessWidget {
                   icon: Icons.child_care_rounded,
                   title: "Q-CHAT Test",
                   subtitle: "For toddlers & children",
-                  colors: [const Color(0xFFE91E63), const Color(0xFFAD1457)],
+                  colors: [Color(0xFFE91E63), Color(0xFFAD1457)],
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const QChatTestPage())),
                 ),
                 
-                const SizedBox(height: 20),
+                SizedBox(height: 20),
                 
                 _buildOptionCard(
                   context,
                   icon: Icons.psychology_rounded,
                   title: "AQ Test",
                   subtitle: "For adolescents & adults",
-                  colors: [const Color(0xFF2196F3), const Color(0xFF1565C0)],
+                  colors: [Color(0xFF2196F3), Color(0xFF1565C0)],
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const AqTestPage())),
                 ),
                 
-                const SizedBox(height: 20),
+                SizedBox(height: 20),
                 
                 _buildOptionCard(
                   context,
                   icon: Icons.videocam_rounded,
                   title: "Upload Video",
                   subtitle: "AI behaviour analysis",
-                  colors: [const Color(0xFF9C27B0), const Color(0xFF6A1B9A)],
+                  colors: [Color(0xFF9C27B0), Color(0xFF6A1B9A)],
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const VideoUploadPage())),
                 ),
                 
-                const Spacer(),
+                Spacer(),
               ],
             ),
           ),
@@ -105,7 +105,7 @@ class ParentHomePage extends StatelessWidget {
         boxShadow: [
           BoxShadow(
             color: colors[0].withOpacity(0.3),
-            offset: const Offset(0, 8),
+            offset: Offset(0, 8),
             blurRadius: 20,
           ),
         ],
@@ -116,32 +116,32 @@ class ParentHomePage extends StatelessWidget {
           borderRadius: BorderRadius.circular(20),
           onTap: onTap,
           child: Padding(
-            padding: const EdgeInsets.all(24),
+            padding: EdgeInsets.all(24),
             child: Row(
               children: [
                 Container(
-                  padding: const EdgeInsets.all(12),
+                  padding: EdgeInsets.all(12),
                   decoration: BoxDecoration(
                     color: Colors.white.withOpacity(0.2),
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Icon(icon, color: Colors.white, size: 24),
                 ),
-                const SizedBox(width: 16),
+                SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         title,
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: Colors.white,
                           fontSize: 18,
                           fontWeight: FontWeight.w700,
                           fontFamily: 'Inter',
                         ),
                       ),
-                      const SizedBox(height: 4),
+                      SizedBox(height: 4),
                       Text(
                         subtitle,
                         style: TextStyle(
