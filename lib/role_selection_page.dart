@@ -137,20 +137,7 @@ class RoleSelectionPage extends StatelessWidget {
                         title: "Therapist",
                         subtitle: "Manage students and therapy sessions",
                         isMobile: isMobile,
-                      ),
-                      
-                      SizedBox(height: isMobile ? 20 : 25),
-                      
-                      _buildRoleCard(
-                        context,
-                        gradient: const LinearGradient(
-                          colors: [Color(0xFF9C27B0), Color(0xFF6A1B9A)],
-                        ),
-                        icon: Icons.admin_panel_settings_rounded,
-                        title: "Admin",
-                        subtitle: "System administration and user management",
-                        isMobile: isMobile,
-                      ),
+                      ),           
 
                       SizedBox(height: isMobile ? 40 : 50),
 
@@ -229,7 +216,6 @@ class RoleSelectionPage extends StatelessWidget {
         MaterialPageRoute(builder: (context) => TherapistLoginPage()),
       );
     }
-    // Later you can add Therapist and Admin navigation similarly
   },
           child: Padding(
             padding: EdgeInsets.all(isMobile ? 20 : 28),

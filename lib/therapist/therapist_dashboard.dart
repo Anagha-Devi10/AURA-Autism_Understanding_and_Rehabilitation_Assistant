@@ -1,11 +1,12 @@
 // Therapist Dashboard Page
+
 import 'package:flutter/material.dart';
 import 'recommendation_page.dart';
 
 // Import new pages
 import 'student_profiles_page.dart';
-import 'therapy_management_page.dart';
 import 'assessment_page.dart';
+import 'pages/dashboard_page.dart';
 
 class TherapistDashboard extends StatelessWidget {
   final String? therapistId;
@@ -83,7 +84,7 @@ class TherapistDashboard extends StatelessWidget {
                     final int tid = therapistId != null ? (int.tryParse(therapistId!) ?? 0) : 0;
                     Navigator.push(
                       context,
-                      MaterialPageRoute(builder: (context) => TherapyManagementPage(therapistId: tid)),
+                      MaterialPageRoute(builder: (context) => DashboardPage()),
                     );
                   },
                 ),

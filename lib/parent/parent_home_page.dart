@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'qchat_test_page.dart';
 import 'aq_test_page.dart';
 import 'video_upload_page.dart';
+import '../screens/home_screen.dart';
 
 class ParentHomePage extends StatelessWidget {
   const ParentHomePage({super.key});
@@ -51,16 +51,6 @@ class ParentHomePage extends StatelessWidget {
                 Spacer(),
                 
                 // Assessment Cards
-                _buildOptionCard(
-                  context,
-                  icon: Icons.child_care_rounded,
-                  title: "Q-CHAT Test",
-                  subtitle: "For toddlers & children",
-                  colors: [Color(0xFFE91E63), Color(0xFFAD1457)],
-                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const QChatTestPage())),
-                ),
-                
-                SizedBox(height: 20),
                 
                 _buildOptionCard(
                   context,
@@ -80,6 +70,17 @@ class ParentHomePage extends StatelessWidget {
                   subtitle: "AI behaviour analysis",
                   colors: [Color(0xFF9C27B0), Color(0xFF6A1B9A)],
                   onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const VideoUploadPage())),
+                ),
+
+                SizedBox(height: 20),
+
+                _buildOptionCard(
+                  context,
+                  icon: Icons.child_care_rounded,
+                  title: "Games ",
+                  subtitle: "Interactive assessment games",
+                  colors: [Color(0xFFE91E63), Color(0xFFAD1457)],
+                  onTap: () => Navigator.push(context, MaterialPageRoute(builder: (context) => const HomeScreen())),
                 ),
                 
                 Spacer(),
