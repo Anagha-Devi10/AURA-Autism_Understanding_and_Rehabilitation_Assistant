@@ -180,6 +180,30 @@ class ApiService {
     }
   }
   
+  /// Get a single child profile by ID
+  Future<Map<String, dynamic>?> getChild(int studentId) async {
+    try {
+      final response = await http.get(
+        Uri.parse('$baseUrl/api/students/$studentId'),
+        headers: _headers,
+      );
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        // The endpoint may return the student directly or wrapped in a key
+        if (data is Map<String, dynamic>) {
+          if (data.containsKey('child')) return Map<String, dynamic>.from(data['child']);
+          if (data.containsKey('student')) return Map<String, dynamic>.from(data['student']);
+          if (data.containsKey('id')) return data;
+        }
+      }
+      return null;
+    } catch (e) {
+      print('Error fetching child $studentId: $e');
+      return null;
+    }
+  }
+
   /// Create a new child profile
   Future<Map<String, dynamic>?> createChild({
     required String name,

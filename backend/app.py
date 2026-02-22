@@ -9,13 +9,13 @@ import mysql.connector
 import json
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from sqlalchemy import Table
+from sqlalchemy import Table, case, literal, text
 from werkzeug.security import generate_password_hash, check_password_hash
 from sklearn.pipeline import Pipeline
 from moviepy.editor import VideoFileClip
 import librosa
 from datetime import datetime
-from models import db, Child, GameSession, ProgressEntry, Therapist
+from models import db, Child, GameSession, ProgressEntry, Therapist, Assessment, TherapySession, Parent
 from games import get_all_games, get_game_by_id
 
 try:
@@ -358,6 +358,16 @@ with app.app_context():
         print(f" Could not load therapists table: {e}")
     
     db.create_all()
+    
+    # Ensure student_id column exists in parents table
+    try:
+        db.session.execute(text("ALTER TABLE parents ADD COLUMN student_id INT NULL"))
+        db.session.execute(text("ALTER TABLE parents ADD CONSTRAINT fk_parent_student FOREIGN KEY (student_id) REFERENCES students(id)"))
+        db.session.commit()
+        print("✓ Added student_id column to parents table")
+    except Exception:
+        db.session.rollback()
+        # Column already exists, that's fine
 
 # MySQL connection
 mysql_conn = None
@@ -1055,7 +1065,7 @@ def create_child():
             name=name,
             age=age,
             guardian=guardian,
-            notes=notes,
+           
             therapist_id=therapist_id
         )
         db.session.add(child)
@@ -1103,18 +1113,32 @@ def update_child(student_id):
 
 @app.route('/api/students/<int:student_id>', methods=['DELETE'])
 def delete_child(student_id):
-    """Delete a child profile"""
+    """Delete a child profile and all related records"""
     child = Child.query.get(student_id)
     if not child:
         return jsonify({'status': 'error', 'message': 'Child not found'}), 404
     
-    db.session.delete(child)
-    db.session.commit()
-    
-    return jsonify({
-        'status': 'success',
-        'message': f"Profile for {child.name} deleted"
-    })
+    try:
+        # Delete related records first
+        ProgressEntry.query.filter_by(student_id=student_id).delete()
+        TherapySession.query.filter_by(child_id=student_id).delete()
+        Assessment.query.filter_by(child_id=student_id).delete()
+        GameSession.query.filter_by(student_id=student_id).delete()
+        # Unlink parents instead of deleting them
+        Parent.query.filter_by(student_id=student_id).update({'student_id': None})
+        
+        db.session.delete(child)
+        db.session.commit()
+        
+        return jsonify({
+            'status': 'success',
+            'message': f"Profile for {child.name} deleted"
+        })
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error deleting student: {e}")
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 # ============================================
@@ -1267,6 +1291,34 @@ def predict():
 
 
 # ============================================
+# THERAPIST AUTO-ASSIGNMENT
+# ============================================
+def get_least_loaded_therapist_id():
+    """Find the therapist with the fewest active therapy sessions.
+    Prefers therapists with 0 sessions first, then sorts by count ascending."""
+    try:
+        cur = mysql_conn.cursor(dictionary=True)
+        cur.execute("""
+            SELECT t.id, t.name, COUNT(ts.id) AS session_count
+            FROM therapists t
+            LEFT JOIN therapy_sessions ts 
+                ON t.id = ts.therapist_id AND ts.status IN ('pending', 'scheduled')
+            GROUP BY t.id, t.name
+            ORDER BY session_count ASC, t.id ASC
+            LIMIT 1
+        """)
+        row = cur.fetchone()
+        cur.close()
+        if row:
+            print(f"🩺 Auto-assigning therapist: {row['name']} (id={row['id']}, active sessions={row['session_count']})")
+            return row['id']
+        return None
+    except Exception as e:
+        print(f"Error finding least-loaded therapist: {e}")
+        return None
+
+
+# ============================================
 # AUTH ENDPOINTS
 # ============================================
 @app.route("/register", methods=["POST"])
@@ -1282,6 +1334,8 @@ def register():
         name = data.get("name")
         email = data.get("email")
         password = data.get("password")
+        child_name = data.get("child_name")
+        child_age = data.get("child_age")
 
         if not name or not email or not password:
             return jsonify({"error": "All fields required"}), 400
@@ -1292,9 +1346,21 @@ def register():
 
         hashed_pw = generate_password_hash(password)
 
+        # Create student record if child info provided
+        student_id = None
+        if child_name:
+            child_age_val = int(child_age) if child_age else 5
+            therapist_id = get_least_loaded_therapist_id()
+            cursor.execute(
+                "INSERT INTO students (name, age, guardian, guardian_email, therapist_id) VALUES (%s, %s, %s, %s, %s)",
+                (child_name, child_age_val, name, email, therapist_id)
+            )
+            mysql_conn.commit()
+            student_id = cursor.lastrowid
+
         cursor.execute(
-            "INSERT INTO parents (name, email, password) VALUES (%s, %s, %s)",
-            (name, email, hashed_pw)
+            "INSERT INTO parents (name, email, password, student_id) VALUES (%s, %s, %s, %s)",
+            (name, email, hashed_pw, student_id)
         )
         mysql_conn.commit()
         
@@ -1303,6 +1369,68 @@ def register():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": f"Registration failed: {str(e)}"}), 500
+
+
+@app.route("/api/parents/<int:parent_id>/link_student", methods=["POST"])
+def link_parent_student(parent_id):
+    """Link a parent to a student - creates student if needed"""
+    if cursor is None:
+        return jsonify({"error": "Database connection not available."}), 503
+    
+    try:
+        data = request.get_json(force=True)
+        child_name = data.get("child_name")
+        child_age = data.get("child_age", 5)
+        
+        if not child_name:
+            return jsonify({"error": "Child name is required"}), 400
+        
+        # Auto-assign therapist with least active sessions
+        therapist_id = get_least_loaded_therapist_id()
+        
+        # Create student with therapist assignment
+        cursor.execute(
+            "INSERT INTO students (name, age, guardian, guardian_email, therapist_id) VALUES (%s, %s, %s, (SELECT name FROM parents WHERE id=%s), %s)",
+            (child_name, int(child_age), '', parent_id, therapist_id)
+        )
+        mysql_conn.commit()
+        student_id = cursor.lastrowid
+        
+        # Update parent guardian info
+        cursor.execute("SELECT name, email FROM parents WHERE id=%s", (parent_id,))
+        parent = cursor.fetchone()
+        if parent:
+            cursor.execute(
+                "UPDATE students SET guardian=%s, guardian_email=%s WHERE id=%s",
+                (parent["name"], parent["email"], student_id)
+            )
+        
+        # Link parent to student
+        cursor.execute(
+            "UPDATE parents SET student_id=%s WHERE id=%s",
+            (student_id, parent_id)
+        )
+        mysql_conn.commit()
+        
+        # Get therapist name for response
+        therapist_name = None
+        if therapist_id:
+            cursor.execute("SELECT name FROM therapists WHERE id=%s", (therapist_id,))
+            t = cursor.fetchone()
+            if t:
+                therapist_name = t["name"]
+        
+        return jsonify({
+            "message": "Student linked successfully",
+            "student_id": student_id,
+            "student_name": child_name,
+            "therapist_id": therapist_id,
+            "therapist_name": therapist_name
+        }), 200
+        
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to link student: {str(e)}"}), 500
 
 
 @app.route("/login", methods=["POST"])
@@ -1330,10 +1458,21 @@ def login():
         if not check_password_hash(user["password"], password):
             return jsonify({"error": "Invalid email or password"}), 401
 
+        # Get linked student info
+        student_id = user.get("student_id")
+        student_name = None
+        if student_id:
+            cursor.execute("SELECT name FROM students WHERE id=%s", (student_id,))
+            student = cursor.fetchone()
+            if student:
+                student_name = student["name"]
+
         return jsonify({
             "message": "Login successful",
             "parent_id": user["id"],
-            "name": user["name"]
+            "name": user["name"],
+            "student_id": student_id,
+            "student_name": student_name
         }), 200
         
     except Exception as e:
@@ -1595,13 +1734,22 @@ def delete_student(student_id):
             return jsonify({'error': 'Database not connected'}), 503
 
         cur = mysql_conn.cursor(buffered=True)
+
+        # Check student exists first
+        cur.execute('SELECT id FROM students WHERE id = %s', (student_id,))
+        if not cur.fetchone():
+            cur.close()
+            return jsonify({'error': 'Student not found'}), 404
+
+        # Delete related records in correct order (child tables first)
+        cur.execute('DELETE FROM progress_entries WHERE student_id = %s', (student_id,))
+        cur.execute('DELETE FROM therapy_sessions WHERE child_id = %s', (student_id,))
+        cur.execute('DELETE FROM assessments WHERE child_id = %s', (student_id,))
+        cur.execute('DELETE FROM game_sessions WHERE student_id = %s', (student_id,))
+        cur.execute('UPDATE parents SET student_id = NULL WHERE student_id = %s', (student_id,))
         cur.execute('DELETE FROM students WHERE id = %s', (student_id,))
         mysql_conn.commit()
-        affected = cur.rowcount
         cur.close()
-
-        if affected == 0:
-            return jsonify({'error': 'Student not found'}), 404
 
         return jsonify({'message': 'Student deleted successfully'}), 200
     except Exception as e:
@@ -1627,6 +1775,1202 @@ def get_student_detail(student_id):
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================
+# ASSESSMENT ENDPOINTS
+# ============================================
+
+@app.route("/api/assessments", methods=["POST"])
+def save_assessment():
+    """Save combined video + questionnaire assessment results"""
+    try:
+        data = request.get_json(force=True)
+        
+        # Get or create child
+        child_id = data.get('student_id')
+        
+        if not child_id:
+            # Create new child if not exists
+            child = Child(
+                name=data.get('child_name', 'Unknown'),
+                age=data.get('child_age', 0),
+                guardian=data.get('guardian_name', ''),
+                guardian_email=data.get('guardian_email'),
+                guardian_phone=data.get('guardian_phone')
+            )
+            db.session.add(child)
+            db.session.flush()
+            child_id = child.id
+        
+        # Create assessment
+        assessment = Assessment(
+            child_id=child_id,
+            video_score=data.get('video_score'),
+            video_prediction=data.get('video_prediction'),
+            video_confidence=data.get('video_confidence'),
+            questionnaire_score=data.get('questionnaire_score'),
+            questionnaire_risk=data.get('questionnaire_risk'),
+            combined_score=data.get('combined_score'),
+            combined_risk_level=data.get('combined_risk_level'),
+            recommendation=data.get('recommendation'),
+            status='completed'
+        )
+        db.session.add(assessment)
+        db.session.flush()
+        
+        # Create progress entry for this assessment
+        progress = ProgressEntry(
+            student_id=child_id,
+            entry_type='assessment',
+            title='Initial Assessment Completed',
+            date=datetime.utcnow().date(),
+            notes=f"Combined assessment completed. Risk level: {data.get('combined_risk_level', 'Unknown')}. "
+                  f"Video score: {data.get('video_score', 'N/A')}, "
+                  f"Questionnaire score: {data.get('questionnaire_score', 'N/A')}",
+            avg_overall=data.get('combined_score')
+        )
+        db.session.add(progress)
+        
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "Assessment saved successfully",
+            "assessment_id": assessment.id,
+            "student_id": child_id
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error saving assessment: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/assessments/<int:assessment_id>", methods=["GET"])
+def get_assessment(assessment_id):
+    """Get assessment by ID"""
+    try:
+        assessment = Assessment.query.get(assessment_id)
+        
+        if not assessment:
+            return jsonify({"error": "Assessment not found"}), 404
+        
+        return jsonify(assessment.to_dict())
+        
+    except Exception as e:
+        print(f"Error getting assessment: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/students/<int:student_id>/assessments", methods=["GET"])
+def get_student_assessments(student_id):
+    """Get all assessments for a student"""
+    try:
+        from models import Assessment
+        assessments = Assessment.query.filter_by(child_id=student_id).order_by(Assessment.created_at.desc()).all()
+        
+        return jsonify({
+            "status": "success",
+            "count": len(assessments),
+            "assessments": [a.to_dict() for a in assessments]
+        })
+        
+    except Exception as e:
+        print(f"Error getting assessments: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/assessments/unreviewed", methods=["GET"])
+def get_unreviewed_assessments():
+    """Get all unreviewed assessments for therapist to assign sessions"""
+    try:
+        assessments = Assessment.query.filter_by(status='completed').filter(
+            Assessment.reviewed_by.is_(None)
+        ).order_by(Assessment.created_at.desc()).all()
+        
+        return jsonify({
+            "status": "success",
+            "count": len(assessments),
+            "assessments": [a.to_dict() for a in assessments]
+        })
+        
+    except Exception as e:
+        print(f"Error getting unreviewed assessments: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/assessments/<int:assessment_id>/review", methods=["PUT"])
+def review_assessment(assessment_id):
+    """Mark assessment as reviewed by therapist"""
+    try:
+        from models import Assessment
+        data = request.get_json(force=True)
+        
+        assessment = Assessment.query.get(assessment_id)
+        if not assessment:
+            return jsonify({"error": "Assessment not found"}), 404
+        
+        assessment.status = 'reviewed'
+        assessment.reviewed_by = data.get('therapist_id')
+        assessment.reviewed_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "Assessment marked as reviewed",
+            "assessment": assessment.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error reviewing assessment: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================
+# THERAPY SESSION ENDPOINTS
+# ============================================
+
+@app.route("/api/therapy_sessions", methods=["POST"])
+def create_therapy_session():
+    """Create a new therapy session (assign therapist to child)"""
+    try:
+        data = request.get_json(force=True)
+
+        student_id = data.get('student_id')
+        therapist_id = data.get('therapist_id')
+
+        if not student_id or not therapist_id:
+            return jsonify({"error": "student_id and therapist_id are required"}), 400
+
+        session = TherapySession(
+            child_id=student_id,
+            therapist_id=therapist_id,
+            assessment_id=data.get('assessment_id'),
+            title=data.get('title', 'Therapy Session'),
+            description=data.get('description'),
+            session_type=data.get('session_type', 'initial'),
+            status='pending'
+        )
+        db.session.add(session)
+
+        # Also assign therapist to student if not already assigned
+        student = Child.query.get(student_id)
+        if student and not student.therapist_id:
+            student.therapist_id = therapist_id
+
+        # Mark assessment as reviewed when session is created from it
+        assessment_id = data.get('assessment_id')
+        if assessment_id:
+            assessment = Assessment.query.get(assessment_id)
+            if assessment:
+                assessment.status = 'reviewed'
+                assessment.reviewed_by = therapist_id
+                assessment.reviewed_at = datetime.utcnow()
+
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "Therapy session created",
+            "session": session.to_dict()
+        }), 201
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error creating therapy session: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/therapy_sessions", methods=["GET"])
+def get_all_therapy_sessions():
+    """Get all therapy sessions with optional filters"""
+    try:
+        # Optional filters
+        therapist_id = request.args.get('therapist_id', type=int)
+        student_id = request.args.get('student_id', type=int)
+        status = request.args.get('status')
+        
+        query = TherapySession.query
+        
+        if therapist_id:
+            query = query.filter_by(therapist_id=therapist_id)
+        if student_id:
+            query = query.filter_by(child_id=student_id)
+        if status:
+            query = query.filter_by(status=status)
+        
+        sessions = query.order_by(TherapySession.created_at.desc()).all()
+        
+        return jsonify({
+            "status": "success",
+            "count": len(sessions),
+            "sessions": [s.to_dict() for s in sessions]
+        })
+        
+    except Exception as e:
+        print(f"Error getting therapy sessions: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/therapy_sessions/<int:session_id>", methods=["GET"])
+def get_therapy_session(session_id):
+    """Get therapy session details"""
+    try:
+        session = TherapySession.query.get(session_id)
+        
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+        
+        return jsonify({
+            "status": "success",
+            "session": session.to_dict()
+        })
+        
+    except Exception as e:
+        print(f"Error getting session: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/therapy_sessions/<int:session_id>/schedule", methods=["PUT"])
+def schedule_therapy_session(session_id):
+    """Therapist schedules date and time for a session"""
+    try:
+        data = request.get_json(force=True)
+        
+        session = TherapySession.query.get(session_id)
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+        
+        # Parse date and time
+        if data.get('scheduled_date'):
+            session.scheduled_date = datetime.strptime(data['scheduled_date'], '%Y-%m-%d').date()
+        if data.get('scheduled_time'):
+            session.scheduled_time = datetime.strptime(data['scheduled_time'], '%H:%M').time()
+        
+        session.duration_minutes = data.get('duration_minutes', 60)
+        session.status = 'scheduled'
+        session.parent_notified = False  # Reset notification flag
+        session.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "Session scheduled successfully",
+            "session": session.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error scheduling session: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/therapy_sessions/<int:session_id>/complete", methods=["PUT"])
+def complete_therapy_session(session_id):
+    """Mark therapy session as completed"""
+    try:
+        from models import TherapySession
+        data = request.get_json(force=True)
+        
+        session = TherapySession.query.get(session_id)
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+        
+        session.status = 'completed'
+        session.completed_at = datetime.utcnow()
+        session.session_notes = data.get('session_notes', '')
+        session.updated_at = datetime.utcnow()
+        
+        # Create progress entry for completed session
+        progress = ProgressEntry(
+            student_id=session.child_id,
+            therapist_id=session.therapist_id,
+            therapy_session_id=session.id,
+            entry_type='session',
+            date=datetime.utcnow().date(),
+            title=f"Session Completed: {session.title}",
+            notes=session.session_notes,
+            communication_score=data.get('communication_score'),
+            social_score=data.get('social_score'),
+            behavioral_score=data.get('behavioral_score'),
+            cognitive_score=data.get('cognitive_score')
+        )
+        db.session.add(progress)
+        
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "Session marked as completed",
+            "session": session.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error completing session: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/therapy_sessions/<int:session_id>/cancel", methods=["PUT"])
+def cancel_therapy_session(session_id):
+    """Cancel a therapy session"""
+    try:
+        from models import TherapySession
+        data = request.get_json(force=True)
+        
+        session = TherapySession.query.get(session_id)
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+        
+        session.status = 'cancelled'
+        session.session_notes = data.get('cancellation_reason', 'Cancelled')
+        session.updated_at = datetime.utcnow()
+        
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "Session cancelled",
+            "session": session.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error cancelling session: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/therapy_sessions/<int:session_id>", methods=["PUT"])
+def update_therapy_session(session_id):
+    """Update therapy session details"""
+    try:
+        from models import TherapySession
+        data = request.get_json(force=True)
+        
+        session = TherapySession.query.get(session_id)
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+        
+        # Update allowed fields
+        if 'title' in data:
+            session.title = data['title']
+        if 'description' in data:
+            session.description = data['description']
+        if 'session_type' in data:
+            session.session_type = data['session_type']
+        if 'duration_minutes' in data:
+            session.duration_minutes = data['duration_minutes']
+        
+        session.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "Session updated",
+            "session": session.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error updating session: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================
+# CHILD THERAPY SESSIONS (for parent view)
+# ============================================
+
+@app.route("/api/students/<int:student_id>/therapy_sessions", methods=["GET"])
+def get_student_therapy_sessions(student_id):
+    """Get all therapy sessions for a student (for parent view)"""
+    try:
+        status_filter = request.args.get('status')
+
+        query = TherapySession.query.filter_by(child_id=student_id)
+        if status_filter:
+            query = query.filter_by(status=status_filter)
+        
+        # MySQL compatible ordering - use CASE instead of NULLS FIRST
+        sessions = query.order_by(
+            case(
+                (TherapySession.scheduled_date == None, 1),
+                else_=0
+            ),
+            TherapySession.scheduled_date.desc()
+        ).all()
+        
+        result = []
+        for session in sessions:
+            therapist = Therapist.query.get(session.therapist_id) if session.therapist_id else None
+            session_dict = session.to_dict()
+            session_dict['therapist_name'] = therapist.name if therapist else 'Unknown'
+            result.append(session_dict)
+        
+        return jsonify({
+            "status": "success",
+            "count": len(result),
+            "sessions": result
+        })
+        
+    except Exception as e:
+        print(f"Error getting child sessions: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "sessions": []}), 200
+
+
+@app.route("/api/students/<int:student_id>/upcoming-sessions", methods=["GET"])
+def get_student_upcoming_sessions(student_id):
+    """Get upcoming scheduled sessions for a student"""
+    try:
+        today = datetime.utcnow().date()
+        
+        sessions = TherapySession.query.filter_by(
+            child_id=student_id,
+            status='scheduled'
+        ).filter(
+            TherapySession.scheduled_date >= today
+        ).order_by(
+            TherapySession.scheduled_date.asc(),
+            case(
+                (TherapySession.scheduled_time == None, 1),
+                else_=0
+            ),
+            TherapySession.scheduled_time.asc()
+        ).all()
+        
+        result = []
+        for session in sessions:
+            therapist = Therapist.query.get(session.therapist_id) if session.therapist_id else None
+            session_dict = session.to_dict()
+            session_dict['therapist_name'] = therapist.name if therapist else 'Unknown'
+            result.append(session_dict)
+        
+        return jsonify({
+            "status": "success",
+            "count": len(result),
+            "sessions": result
+        })
+        
+    except Exception as e:
+        print(f"Error getting upcoming sessions: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "sessions": []}), 200
+
+
+@app.route('/api/students/<int:student_id>/progress', methods=['GET'])
+def get_student_progress_entries(student_id):
+    """Get progress entries for a student"""
+    try:
+        entries = ProgressEntry.query.filter_by(student_id=student_id)\
+            .order_by(ProgressEntry.created_at.desc()).limit(50).all()
+        
+        return jsonify({
+            "status": "success",
+            "entries": [e.to_dict() for e in entries]
+        })
+    except Exception as e:
+        print(f"Error getting student progress: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "entries": []}), 200
+
+
+@app.route('/api/students/<int:student_id>/detailed_progress', methods=['GET'])
+def get_detailed_progress(student_id):
+    """Get detailed progress data for a student including trends"""
+    try:
+        student = Child.query.get(student_id)
+        if not student:
+            return jsonify({'status': 'error', 'message': 'Student not found'}), 404
+        
+        # Get all completed game sessions
+        game_sessions = GameSession.query.filter_by(
+            student_id=student_id,
+            status='completed'
+        ).order_by(GameSession.start_time.desc()).all()
+        
+        # Get therapy sessions
+        therapy_sessions = TherapySession.query.filter_by(
+            child_id=student_id
+        ).order_by(TherapySession.created_at.desc()).all()
+        
+        # Get assessments
+        assessments = Assessment.query.filter_by(
+            child_id=student_id
+        ).order_by(Assessment.created_at.desc()).all()
+        
+        # Calculate averages
+        if game_sessions:
+            total_sessions = len(game_sessions)
+            avg_eye_contact = sum(s.eye_contact_score or 0 for s in game_sessions) / total_sessions
+            avg_speech = sum(s.speech_score or 0 for s in game_sessions) / total_sessions
+            avg_motor = sum(s.motor_score or 0 for s in game_sessions) / total_sessions
+            avg_overall = sum(s.overall_score or 0 for s in game_sessions) / total_sessions
+            
+            game_counts = {}
+            for s in game_sessions:
+                game_counts[s.game_name] = game_counts.get(s.game_name, 0) + 1
+            favorite_game = max(game_counts, key=game_counts.get) if game_counts else None
+        else:
+            total_sessions = 0
+            avg_eye_contact = avg_speech = avg_motor = avg_overall = 0
+            favorite_game = None
+        
+        # Calculate weekly trends (last 4 weeks)
+        from datetime import timedelta
+        today = datetime.utcnow().date()
+        weekly_data = []
+        
+        for i in range(4):
+            week_start = today - timedelta(days=(i+1)*7)
+            week_end = today - timedelta(days=i*7)
+            
+            week_sessions = [s for s in game_sessions 
+                           if s.start_time and week_start <= s.start_time.date() < week_end]
+            
+            if week_sessions:
+                week_avg = sum(s.overall_score or 0 for s in week_sessions) / len(week_sessions)
+            else:
+                week_avg = 0
+            
+            weekly_data.append({
+                'week': f'Week {4-i}',
+                'sessions': len(week_sessions),
+                'average_score': round(week_avg, 1)
+            })
+        
+        weekly_data.reverse()
+        
+        # Therapy session stats
+        completed_therapy = len([s for s in therapy_sessions if s.status == 'completed'])
+        scheduled_therapy = len([s for s in therapy_sessions if s.status == 'scheduled'])
+        
+        return jsonify({
+            'status': 'success',
+            'student': student.to_dict(),
+            'progress': {
+                'total_game_sessions': total_sessions,
+                'total_therapy_sessions': len(therapy_sessions),
+                'completed_therapy_sessions': completed_therapy,
+                'scheduled_therapy_sessions': scheduled_therapy,
+                'avg_eye_contact': round(avg_eye_contact, 1),
+                'avg_speech': round(avg_speech, 1),
+                'avg_motor': round(avg_motor, 1),
+                'avg_overall': round(avg_overall, 1),
+                'favorite_game': favorite_game
+            },
+            'weekly_trends': weekly_data,
+            'recent_game_sessions': [s.to_dict() for s in game_sessions[:10]],
+            'therapy_sessions': [s.to_dict() for s in therapy_sessions],
+            'assessments': [a.to_dict() for a in assessments],
+            'milestones': {
+                'first_assessment': len(assessments) > 0,
+                'first_session_completed': completed_therapy > 0,
+                'five_sessions_completed': completed_therapy >= 5,
+                'ten_sessions_completed': completed_therapy >= 10
+            }
+        })
+        
+    except Exception as e:
+        print(f"Error getting detailed progress: {e}")
+        traceback.print_exc()
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+    
+# ============================================
+# THERAPIST THERAPY SESSIONS
+# ============================================
+
+@app.route("/api/therapists/<int:therapist_id>/therapy_sessions", methods=["GET"])
+def get_therapist_therapy_sessions(therapist_id):
+    """Get all therapy sessions for a therapist"""
+    try:
+        status_filter = request.args.get('status')
+        
+        query = TherapySession.query.filter_by(therapist_id=therapist_id)
+        if status_filter:
+            query = query.filter_by(status=status_filter)
+        
+        # MySQL compatible ordering - use CASE instead of NULLS FIRST
+        sessions = query.order_by(
+            case(
+                (TherapySession.scheduled_date == None, 1),
+                else_=0
+            ),
+            TherapySession.scheduled_date.asc()
+        ).all()
+        
+        result = []
+        for session in sessions:
+            child = Child.query.get(session.child_id)
+            result.append({
+                'id': session.id,
+                'child_id': session.child_id,
+                'child_name': child.name if child else 'Unknown',
+                'therapist_id': session.therapist_id,
+                'assessment_id': session.assessment_id,
+                'title': session.title,
+                'description': session.description,
+                'session_type': session.session_type,
+                'scheduled_date': session.scheduled_date.isoformat() if session.scheduled_date else None,
+                'scheduled_time': str(session.scheduled_time) if session.scheduled_time else None,
+                'duration_minutes': session.duration_minutes,
+                'status': session.status,
+                'completed_at': session.completed_at.isoformat() if session.completed_at else None,
+                'session_notes': session.session_notes,
+                'parent_notified': session.parent_notified,
+                'created_at': session.created_at.isoformat() if session.created_at else None,
+            })
+
+        return jsonify({
+            "status": "success",
+            "count": len(result),
+            "sessions": result
+        }), 200
+        
+    except Exception as e:
+        print(f"Error getting therapist sessions: {e}")
+        traceback.print_exc()
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'sessions': []
+        }), 200
+
+
+@app.route("/api/therapists/<int:therapist_id>/pending_sessions", methods=["GET"])
+def get_therapist_pending_sessions(therapist_id):
+    """Get pending sessions that need scheduling"""
+    try:
+        sessions = TherapySession.query.filter_by(
+            therapist_id=therapist_id,
+            status='pending'
+        ).order_by(TherapySession.created_at.desc()).all()
+        
+        result = []
+        for session in sessions:
+            child = Child.query.get(session.child_id)
+            session_dict = session.to_dict()
+            session_dict['child_name'] = child.name if child else 'Unknown'
+            result.append(session_dict)
+        
+        return jsonify({
+            "status": "success",
+            "count": len(result),
+            "sessions": result
+        })
+        
+    except Exception as e:
+        print(f"Error getting pending sessions: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "sessions": []}), 200
+
+
+@app.route("/api/therapists/<int:therapist_id>/today_sessions", methods=["GET"])
+def get_therapist_today_sessions(therapist_id):
+    """Get today's sessions for a therapist"""
+    try:
+        today = datetime.utcnow().date()
+        
+        sessions = TherapySession.query.filter_by(
+            therapist_id=therapist_id,
+            scheduled_date=today
+        ).filter(
+            TherapySession.status.in_(['scheduled', 'pending'])
+        ).order_by(
+            case(
+                (TherapySession.scheduled_time == None, 1),
+                else_=0
+            ),
+            TherapySession.scheduled_time.asc()
+        ).all()
+        
+        result = []
+        for session in sessions:
+            child = Child.query.get(session.child_id)
+            session_dict = session.to_dict()
+            session_dict['child_name'] = child.name if child else 'Unknown'
+            result.append(session_dict)
+        
+        return jsonify({
+            "status": "success",
+            "count": len(result),
+            "sessions": result
+        })
+        
+    except Exception as e:
+        print(f"Error getting today's sessions: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "sessions": []}), 200
+
+
+@app.route("/api/therapists/<int:therapist_id>/scheduled_sessions", methods=["GET"])
+def get_therapist_scheduled_sessions(therapist_id):
+    """Get all scheduled (future) sessions for a therapist"""
+    try:
+        today = datetime.utcnow().date()
+        
+        sessions = TherapySession.query.filter_by(
+            therapist_id=therapist_id,
+            status='scheduled'
+        ).filter(
+            TherapySession.scheduled_date >= today
+        ).order_by(
+            TherapySession.scheduled_date.asc(),
+            case(
+                (TherapySession.scheduled_time == None, 1),
+                else_=0
+            ),
+            TherapySession.scheduled_time.asc()
+        ).all()
+        
+        result = []
+        for session in sessions:
+            child = Child.query.get(session.child_id)
+            session_dict = session.to_dict()
+            session_dict['child_name'] = child.name if child else 'Unknown'
+            result.append(session_dict)
+        
+        return jsonify({
+            "status": "success",
+            "count": len(result),
+            "sessions": result
+        })
+        
+    except Exception as e:
+        print(f"Error getting scheduled sessions: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "sessions": []}), 200
+
+
+@app.route("/api/therapists/<int:therapist_id>/completed_sessions", methods=["GET"])
+def get_therapist_completed_sessions(therapist_id):
+    """Get all completed sessions for a therapist"""
+    try:
+        sessions = TherapySession.query.filter_by(
+            therapist_id=therapist_id,
+            status='completed'
+        ).order_by(TherapySession.completed_at.desc()).limit(50).all()
+        
+        result = []
+        for session in sessions:
+            child = Child.query.get(session.child_id)
+            session_dict = session.to_dict()
+            session_dict['child_name'] = child.name if child else 'Unknown'
+            result.append(session_dict)
+        
+        return jsonify({
+            "status": "success",
+            "count": len(result),
+            "sessions": result
+        })
+        
+    except Exception as e:
+        print(f"Error getting completed sessions: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "sessions": []}), 200
+
+
+# ============================================
+# THERAPIST STUDENTS ENDPOINTS
+# ============================================
+
+@app.route("/api/therapists/<int:therapist_id>/students", methods=["GET"])
+def get_therapist_students(therapist_id):
+    """Get all students assigned to a therapist"""
+    try:
+        students = Child.query.filter_by(therapist_id=therapist_id).order_by(Child.name.asc()).all()
+        
+        result = []
+        for student in students:
+            student_dict = student.to_dict()
+            
+            # Get session counts
+            session_counts = db.session.query(
+                TherapySession.status,
+                db.func.count(TherapySession.id)
+            ).filter_by(child_id=student.id).group_by(TherapySession.status).all()
+            
+            counts = {status: count for status, count in session_counts}
+            student_dict['pending_sessions'] = counts.get('pending', 0)
+            student_dict['scheduled_sessions'] = counts.get('scheduled', 0)
+            student_dict['completed_sessions'] = counts.get('completed', 0)
+            
+            # Get latest assessment
+            latest_assessment = Assessment.query.filter_by(
+                child_id=student.id
+            ).order_by(Assessment.created_at.desc()).first()
+            
+            if latest_assessment:
+                student_dict['latest_assessment'] = {
+                    'id': latest_assessment.id,
+                    'risk_level': latest_assessment.combined_risk_level,
+                    'score': latest_assessment.combined_score,
+                    'date': latest_assessment.created_at.isoformat() if latest_assessment.created_at else None
+                }
+            else:
+                student_dict['latest_assessment'] = None
+            
+            result.append(student_dict)
+        
+        return jsonify({
+            "status": "success",
+            "count": len(result),
+            "students": result
+        })
+        
+    except Exception as e:
+        print(f"Error getting therapist students: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "students": []}), 200
+
+
+@app.route("/api/therapists/<int:therapist_id>/students/<int:student_id>", methods=["GET"])
+def get_therapist_student_detail(therapist_id, student_id):
+    """Get detailed student info for a therapist"""
+    try:
+        student = Child.query.filter_by(id=student_id, therapist_id=therapist_id).first()
+        
+        if not student:
+            return jsonify({"error": "Student not found or not assigned to this therapist"}), 404
+        
+        student_dict = student.to_dict()
+        
+        # Get all assessments
+        assessments = Assessment.query.filter_by(child_id=student_id).order_by(Assessment.created_at.desc()).all()
+        student_dict['assessments'] = [a.to_dict() for a in assessments]
+        
+        # Get all therapy sessions
+        sessions = TherapySession.query.filter_by(child_id=student_id).order_by(
+            case(
+                (TherapySession.scheduled_date == None, 1),
+                else_=0
+            ),
+            TherapySession.scheduled_date.desc()
+        ).all()
+        student_dict['therapy_sessions'] = [s.to_dict() for s in sessions]
+        
+        # Get progress entries
+        progress = ProgressEntry.query.filter_by(student_id=student_id).order_by(ProgressEntry.created_at.desc()).limit(20).all()
+        student_dict['progress_entries'] = [p.to_dict() for p in progress]
+        
+        return jsonify({
+            "status": "success",
+            "student": student_dict
+        })
+        
+    except Exception as e:
+        print(f"Error getting student detail: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================
+# UNASSIGNED STUDENTS (for therapist assignment)
+# ============================================
+
+@app.route("/api/students/unassigned", methods=["GET"])
+def get_unassigned_students():
+    """Get students without a therapist assigned"""
+    try:
+        students = Child.query.filter(
+            (Child.therapist_id == None) | (Child.therapist_id == 0)
+        ).order_by(Child.created_at.desc()).all()
+        
+        return jsonify({
+            "status": "success",
+            "count": len(students),
+            "students": [s.to_dict() for s in students]
+        })
+        
+    except Exception as e:
+        print(f"Error getting unassigned students: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "students": []}), 200
+
+
+# ============================================
+# NOTIFICATIONS ENDPOINTS
+# ============================================
+
+@app.route("/api/therapy_sessions/<int:session_id>/notify_parent", methods=["POST"])
+def notify_parent_session(session_id):
+    """Mark that parent has been notified about session"""
+    try:
+        session = TherapySession.query.get(session_id)
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+        
+        session.parent_notified = True
+        session.updated_at = datetime.utcnow()
+        db.session.commit()
+        
+        # In a real app, you would send an email/notification here
+        
+        return jsonify({
+            "success": True,
+            "message": "Parent notification sent",
+            "session": session.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error notifying parent: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/parents/<int:parent_id>/notifications", methods=["GET"])
+def get_parent_notifications(parent_id):
+    """Get notifications for a parent (upcoming sessions, etc.)"""
+    try:
+        child_id = request.args.get('student_id', type=int)
+        
+        if not child_id:
+            return jsonify({"error": "student_id is required"}), 400
+        
+        today = datetime.utcnow().date()
+        
+        # Get sessions scheduled in next 7 days
+        from datetime import timedelta
+        next_week = today + timedelta(days=7)
+        
+        upcoming = TherapySession.query.filter_by(
+            child_id=child_id,
+            status='scheduled'
+        ).filter(
+            TherapySession.scheduled_date >= today,
+            TherapySession.scheduled_date <= next_week
+        ).order_by(
+            TherapySession.scheduled_date.asc(),
+            case(
+                (TherapySession.scheduled_time == None, 1),
+                else_=0
+            ),
+            TherapySession.scheduled_time.asc()
+        ).all()
+        
+        notifications = []
+        for session in upcoming:
+            therapist = Therapist.query.get(session.therapist_id) if session.therapist_id else None
+            days_until = (session.scheduled_date - today).days if session.scheduled_date else 0
+            
+            notifications.append({
+                'type': 'upcoming_session',
+                'session_id': session.id,
+                'title': session.title,
+                'therapist_name': therapist.name if therapist else 'Unknown',
+                'scheduled_date': session.scheduled_date.isoformat() if session.scheduled_date else None,
+                'scheduled_time': str(session.scheduled_time) if session.scheduled_time else None,
+                'days_until': days_until,
+                'is_today': days_until == 0,
+                'is_tomorrow': days_until == 1
+            })
+        
+        return jsonify({
+            "status": "success",
+            "count": len(notifications),
+            "notifications": notifications
+        })
+        
+    except Exception as e:
+        print(f"Error getting parent notifications: {e}")
+        traceback.print_exc()
+        return jsonify({"status": "error", "error": str(e), "notifications": []}), 200
+
+
+# ============================================
+# RESCHEDULE SESSION
+# ============================================
+
+@app.route("/api/therapy_sessions/<int:session_id>/reschedule", methods=["PUT"])
+def reschedule_therapy_session(session_id):
+    """Reschedule a therapy session"""
+    try:
+        data = request.get_json(force=True)
+        
+        session = TherapySession.query.get(session_id)
+        if not session:
+            return jsonify({"error": "Session not found"}), 404
+        
+        if session.status not in ['pending', 'scheduled']:
+            return jsonify({"error": "Cannot reschedule completed or cancelled sessions"}), 400
+        
+        # Update schedule
+        if data.get('scheduled_date'):
+            session.scheduled_date = datetime.strptime(data['scheduled_date'], '%Y-%m-%d').date()
+        if data.get('scheduled_time'):
+            session.scheduled_time = datetime.strptime(data['scheduled_time'], '%H:%M').time()
+        if data.get('duration_minutes'):
+            session.duration_minutes = data['duration_minutes']
+        
+        session.status = 'scheduled'
+        session.parent_notified = False  # Reset notification
+        session.updated_at = datetime.utcnow()
+        
+        # Add note about rescheduling
+        reschedule_note = f"Rescheduled on {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+        if data.get('reason'):
+            reschedule_note += f": {data['reason']}"
+        
+        if session.session_notes:
+            session.session_notes = f"{session.session_notes}\n{reschedule_note}"
+        else:
+            session.session_notes = reschedule_note
+        
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "message": "Session rescheduled successfully",
+            "session": session.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error rescheduling session: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================
+# BULK OPERATIONS
+# ============================================
+
+@app.route("/api/therapists/<int:therapist_id>/sessions/bulk_schedule", methods=["POST"])
+def bulk_schedule_sessions(therapist_id):
+    """Schedule multiple sessions at once"""
+    try:
+        data = request.get_json(force=True)
+        sessions_data = data.get('sessions', [])
+        
+        if not sessions_data:
+            return jsonify({"error": "No sessions provided"}), 400
+        
+        scheduled = []
+        errors = []
+        
+        for session_data in sessions_data:
+            session_id = session_data.get('session_id')
+            session = TherapySession.query.get(session_id)
+            
+            if not session:
+                errors.append({"session_id": session_id, "error": "Session not found"})
+                continue
+            
+            if session.therapist_id != therapist_id:
+                errors.append({"session_id": session_id, "error": "Session not assigned to this therapist"})
+                continue
+            
+            try:
+                if session_data.get('scheduled_date'):
+                    session.scheduled_date = datetime.strptime(session_data['scheduled_date'], '%Y-%m-%d').date()
+                if session_data.get('scheduled_time'):
+                    session.scheduled_time = datetime.strptime(session_data['scheduled_time'], '%H:%M').time()
+                
+                session.duration_minutes = session_data.get('duration_minutes', 60)
+                session.status = 'scheduled'
+                session.updated_at = datetime.utcnow()
+                
+                scheduled.append(session.id)
+            except Exception as e:
+                errors.append({"session_id": session_id, "error": str(e)})
+        
+        db.session.commit()
+        
+        return jsonify({
+            "success": True,
+            "scheduled_count": len(scheduled),
+            "scheduled_ids": scheduled,
+            "errors": errors
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        print(f"Error bulk scheduling: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ============================================
+# SESSION STATISTICS
+# ============================================
+
+@app.route("/api/therapists/<int:therapist_id>/session_stats", methods=["GET"])
+def get_therapist_session_stats(therapist_id):
+    """Get detailed session statistics for a therapist"""
+    try:
+        from datetime import timedelta
+        today = datetime.utcnow().date()
+        week_ago = today - timedelta(days=7)
+        month_ago = today - timedelta(days=30)
+        
+        # Total counts by status
+        status_counts = db.session.query(
+            TherapySession.status,
+            db.func.count(TherapySession.id)
+        ).filter_by(therapist_id=therapist_id).group_by(TherapySession.status).all()
+        
+        counts = {status: count for status, count in status_counts}
+        
+        # Sessions completed this week
+        completed_this_week = TherapySession.query.filter_by(
+            therapist_id=therapist_id,
+            status='completed'
+        ).filter(TherapySession.completed_at >= week_ago).count()
+        
+        # Sessions completed this month
+        completed_this_month = TherapySession.query.filter_by(
+            therapist_id=therapist_id,
+            status='completed'
+        ).filter(TherapySession.completed_at >= month_ago).count()
+        
+        # Upcoming sessions count
+        upcoming = TherapySession.query.filter_by(
+            therapist_id=therapist_id,
+            status='scheduled'
+        ).filter(TherapySession.scheduled_date >= today).count()
+        
+        # Average session duration (for completed sessions with notes)
+        avg_duration = db.session.query(
+            db.func.avg(TherapySession.duration_minutes)
+        ).filter_by(
+            therapist_id=therapist_id,
+            status='completed'
+        ).scalar() or 60
+        
+        return jsonify({
+            "status": "success",
+            "stats": {
+                "total_pending": counts.get('pending', 0),
+                "total_scheduled": counts.get('scheduled', 0),
+                "total_completed": counts.get('completed', 0),
+                "total_cancelled": counts.get('cancelled', 0),
+                "completed_this_week": completed_this_week,
+                "completed_this_month": completed_this_month,
+                "upcoming_sessions": upcoming,
+                "average_duration_minutes": round(float(avg_duration), 1)
+            }
+        })
+        
+    except Exception as e:
+        print(f"Error getting session stats: {e}")
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 # ============================================

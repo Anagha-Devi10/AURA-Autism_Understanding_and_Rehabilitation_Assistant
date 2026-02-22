@@ -13,6 +13,8 @@ class _ParentRegisterPageState extends State<ParentRegisterPage> {
   final TextEditingController nameController = TextEditingController();
   final TextEditingController emailController = TextEditingController();
   final TextEditingController passwordController = TextEditingController();
+  final TextEditingController childNameController = TextEditingController();
+  final TextEditingController childAgeController = TextEditingController();
 
   static const String baseUrl = "http://localhost:5000";
 
@@ -26,6 +28,8 @@ class _ParentRegisterPageState extends State<ParentRegisterPage> {
           "name": nameController.text,
           "email": emailController.text,
           "password": passwordController.text,
+          "child_name": childNameController.text,
+          "child_age": childAgeController.text.isNotEmpty ? int.tryParse(childAgeController.text) : null,
         }),
       );
 
@@ -56,7 +60,7 @@ class _ParentRegisterPageState extends State<ParentRegisterPage> {
           children: [
             TextField(
               controller: nameController,
-              decoration: const InputDecoration(labelText: "Name"),
+              decoration: const InputDecoration(labelText: "Your Name"),
             ),
             TextField(
               controller: emailController,
@@ -66,6 +70,22 @@ class _ParentRegisterPageState extends State<ParentRegisterPage> {
               controller: passwordController,
               obscureText: true,
               decoration: const InputDecoration(labelText: "Password"),
+            ),
+            const SizedBox(height: 20),
+            const Divider(),
+            const Text(
+              "Child Information",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: childNameController,
+              decoration: const InputDecoration(labelText: "Child's Name"),
+            ),
+            TextField(
+              controller: childAgeController,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: "Child's Age"),
             ),
             const SizedBox(height: 20),
             ElevatedButton(

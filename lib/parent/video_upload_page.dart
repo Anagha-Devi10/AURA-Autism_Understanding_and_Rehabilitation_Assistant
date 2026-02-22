@@ -10,7 +10,10 @@ import 'video_upload_io.dart'
     if (dart.library.html) 'video_upload_web.dart' as platform;
 
 class VideoUploadPage extends StatefulWidget {
-  const VideoUploadPage({super.key});
+  final int? studentId;
+  final String? studentName;
+  
+  const VideoUploadPage({super.key, this.studentId, this.studentName});
 
   @override
   State<VideoUploadPage> createState() => _VideoUploadPageState();
@@ -324,6 +327,84 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
       recommendation: assessment['recommendation'] ?? 'Consult a specialist.',
       asdRelated: assessment['asd_related'] == true,
     );
+  }
+
+  Future<void> _saveResultsToBackend() async {
+    if (_combinedResult == null) {
+      _showSnackBar('No results to save');
+      return;
+    }
+
+    if (widget.studentId == null) {
+      _showSnackBar('No student linked. Please add your child from the dashboard first.');
+      return;
+    }
+
+    try {
+      final ensemble = _combinedResult!['results']?['ensemble_result'] ?? {};
+      final videoResult = _combinedResult!['results']?['video_result'] ?? {};
+      final questionnaireResult = _combinedResult!['results']?['questionnaire_result'] ?? {};
+      final assessment = _combinedResult!['assessment'] ?? {};
+
+      final double? combinedScore = (ensemble['asd_probability'] as num?)?.toDouble();
+      final double? videoScore = (videoResult['asd_probability'] as num?)?.toDouble();
+      final double? videoConfidence = (videoResult['confidence'] as num?)?.toDouble();
+      final String? videoPrediction = videoResult['prediction'];
+      final double? questionnaireScore = (questionnaireResult['asd_probability'] as num?)?.toDouble();
+
+      // Determine risk level
+      String combinedRisk = 'Low';
+      if (combinedScore != null) {
+        if (combinedScore >= 0.7) {
+          combinedRisk = 'High';
+        } else if (combinedScore >= 0.4) {
+          combinedRisk = 'Medium';
+        }
+      }
+
+      String questionnaireRisk = 'Low';
+      if (questionnaireScore != null) {
+        if (questionnaireScore >= 0.7) {
+          questionnaireRisk = 'High';
+        } else if (questionnaireScore >= 0.4) {
+          questionnaireRisk = 'Medium';
+        }
+      }
+
+      final response = await http.post(
+        Uri.parse('http://localhost:5000/api/assessments'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'student_id': widget.studentId,
+          'video_score': videoScore,
+          'video_prediction': videoPrediction,
+          'video_confidence': videoConfidence,
+          'questionnaire_score': questionnaireScore,
+          'questionnaire_risk': questionnaireRisk,
+          'combined_score': combinedScore,
+          'combined_risk_level': combinedRisk,
+          'recommendation': assessment['recommendation'] ?? '',
+        }),
+      );
+
+      if (response.statusCode == 201) {
+        _showSnackBar('Assessment saved successfully! ✓');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Results saved! Your therapist will review them soon.'),
+              backgroundColor: Colors.green,
+              duration: Duration(seconds: 3),
+            ),
+          );
+        }
+      } else {
+        final errorData = jsonDecode(response.body);
+        _showSnackBar('Failed to save: ${errorData['error'] ?? 'Unknown error'}');
+      }
+    } catch (e) {
+      _showSnackBar('Error saving results: $e');
+    }
   }
 
   void _resetAssessment() {
@@ -1136,10 +1217,7 @@ class _VideoUploadPageState extends State<VideoUploadPage> {
               const SizedBox(width: 12),
               Expanded(
                 child: ElevatedButton.icon(
-                  onPressed: () {
-                    // TODO: Save or share results
-                    _showSnackBar('Results saved!');
-                  },
+                  onPressed: _saveResultsToBackend,
                   icon: const Icon(Icons.save),
                   label: const Text('Save Results'),
                   style: ElevatedButton.styleFrom(

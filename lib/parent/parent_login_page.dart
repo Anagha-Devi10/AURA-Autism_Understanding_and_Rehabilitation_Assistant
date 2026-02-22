@@ -31,9 +31,21 @@ class _ParentLoginPageState extends State<ParentLoginPage> {
       );
 
       if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final int? parentId = data['parent_id'];
+        final int? studentId = data['student_id'];
+        final String? studentName = data['student_name'];
+        final String? parentName = data['name'];
+
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (_) => const ParentHomePage()),
+          MaterialPageRoute(
+            builder: (_) => ParentHomePage(
+              parentId: parentId,
+              studentId: studentId,
+              studentName: studentName ?? parentName ?? 'Your Child',
+            ),
+          ),
         );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(

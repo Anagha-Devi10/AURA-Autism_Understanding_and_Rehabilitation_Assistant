@@ -10,7 +10,10 @@ import 'progress_screen.dart';
 import 'children_screen.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key});
+  final int? studentId;
+  final String? studentName;
+  
+  const HomeScreen({super.key, this.studentId, this.studentName});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -34,9 +37,36 @@ class _HomeScreenState extends State<HomeScreen> {
     
     _isBackendOnline = await _api.checkHealth();
     if (_isBackendOnline) {
-      _children = await _api.getChildren();
-      if (_children.isNotEmpty && _selectedChild == null) {
-        _selectedChild = _children.first;
+      // If launched from parent module with a specific studentId, only load that student
+      if (widget.studentId != null) {
+        try {
+          final student = await _api.getChild(widget.studentId!);
+          if (student != null) {
+            _children = [student];
+            _selectedChild = student;
+          } else {
+            // Fallback: create a minimal entry from the passed info
+            _children = [{
+              'id': widget.studentId,
+              'name': widget.studentName ?? 'Child',
+              'age': 0,
+            }];
+            _selectedChild = _children.first;
+          }
+        } catch (e) {
+          _children = [{
+            'id': widget.studentId,
+            'name': widget.studentName ?? 'Child',
+            'age': 0,
+          }];
+          _selectedChild = _children.first;
+        }
+      } else {
+        // No studentId — load all (e.g. direct access / therapist use)
+        _children = await _api.getChildren();
+        if (_children.isNotEmpty && _selectedChild == null) {
+          _selectedChild = _children.first;
+        }
       }
     }
     
@@ -205,25 +235,28 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildChildSelector() {
+    final bool isParentMode = widget.studentId != null;
+    
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text(
-              'Active Profile',
-              style: TextStyle(
+            Text(
+              isParentMode ? 'Playing as' : 'Active Profile',
+              style: const TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w600,
                 color: AuraTheme.textDark,
               ),
             ),
-            TextButton.icon(
-              onPressed: _navigateToChildren,
-              icon: const Icon(Icons.people_outline, size: 18),
-              label: const Text('Manage'),
-            ),
+            if (!isParentMode)
+              TextButton.icon(
+                onPressed: _navigateToChildren,
+                icon: const Icon(Icons.people_outline, size: 18),
+                label: const Text('Manage'),
+              ),
           ],
         ),
         const SizedBox(height: 12),

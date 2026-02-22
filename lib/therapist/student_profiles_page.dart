@@ -4,7 +4,6 @@ import 'dart:math';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
-import 'dart:io';
 
 class ApiConfig {
   static const String baseUrl = "http://localhost:5000";
@@ -90,8 +89,6 @@ class _StudentProfilesPageState extends State<StudentProfilesPage> {
       throw Exception('Request timed out. Check backend or increase timeout.');
     } on http.ClientException catch (e) {
       throw Exception('ClientException: ${e.message}. Check network/CORS/backend.');
-    } on SocketException {
-      throw Exception('Network error. Is the backend running and reachable?');
     } catch (e) {
       print("❌ Error in _fetchStudents: $e");
       throw Exception('Error fetching students: $e');
@@ -149,12 +146,29 @@ class _StudentProfilesPageState extends State<StudentProfilesPage> {
 
   Future<void> _deleteStudent(String id) async {
     try {
-      await http.delete(
+      final response = await http.delete(
         Uri.parse("${ApiConfig.baseUrl}/students/$id"),
       );
-      setState(() {
-        _refreshKey++;
-      });
+      if (response.statusCode == 200) {
+        setState(() {
+          _refreshKey++;
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Student deleted successfully'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      } else {
+        final data = jsonDecode(response.body);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Delete failed: ${data['error'] ?? 'Unknown error'}')),
+          );
+        }
+      }
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
