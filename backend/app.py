@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import mysql.connector
 import json
+from dotenv import load_dotenv
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from sqlalchemy import Table, case, literal, text
@@ -17,6 +18,9 @@ import librosa
 from datetime import datetime
 from models import db, Child, GameSession, ProgressEntry, Therapist, Assessment, TherapySession, Parent
 from games import get_all_games, get_game_by_id
+
+# Load environment variables from .env file
+load_dotenv()
 
 try:
     import cv2
@@ -334,7 +338,12 @@ app = Flask(__name__)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv(
      "SQLALCHEMY_DATABASE_URI",
-     "mysql+pymysql://root:anuuu1212@localhost:3306/aura_db")
+     "mysql+pymysql://{user}:{password}@{host}:3306/{db}".format(
+         user=os.getenv("DB_USER", "root"),
+         password=os.getenv("DB_PASS", ""),
+         host=os.getenv("DB_HOST", "localhost"),
+         db=os.getenv("DB_NAME", "aura_db"),
+     ))
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db.init_app(app)
 CORS(app, resources={r"/*": {
@@ -377,7 +386,7 @@ try:
     mysql_conn = mysql.connector.connect(
         host=os.getenv("DB_HOST", "localhost"),
         user=os.getenv("DB_USER", "root"),
-        password=os.getenv("DB_PASS", "anuuu1212"),
+        password=os.getenv("DB_PASS", ""),
         database=os.getenv("DB_NAME", "aura_db"),
         connect_timeout=5,
         use_pure=True

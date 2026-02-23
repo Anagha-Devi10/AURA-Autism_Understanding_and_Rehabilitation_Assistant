@@ -153,7 +153,9 @@ class TherapistDashboard extends StatelessWidget {
                             Navigator.push(
                               context,
                               MaterialPageRoute(
-                                builder: (context) => DashboardPage(),
+                                builder: (context) => DashboardPage(
+                                  therapistId: _therapistIdInt,
+                                ),
                               ),
                             );
                           },

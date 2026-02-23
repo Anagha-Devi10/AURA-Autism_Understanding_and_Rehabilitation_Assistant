@@ -1,25 +1,39 @@
 import 'package:google_generative_ai/google_generative_ai.dart';
 
 class GeminiService {
-  static const String apiKey = 'AIzaSyBcxUMLZ-s4-RKdLDMk2lN_8C3ahl9J7PM';
+  // API key is passed at build time via: flutter run --dart-define=GEMINI_API_KEY=your_key
+  // NEVER hardcode the key here — it will be revoked by Google if committed to GitHub.
+  static const String apiKey = String.fromEnvironment('GEMINI_API_KEY');
   late final GenerativeModel model;
 
   GeminiService() {
     model = GenerativeModel(
-      model: 'gemini-2.0-flash',
+      model: 'gemini-2.5-flash',
       apiKey: apiKey,
     );
   }
 
   Future<String> generateReport(String summary, String childName) async {
+    // Check if API key is configured
+    if (apiKey.isEmpty) {
+      print('⚠️ Gemini API key not configured! Using local report generation.');
+      print('Run with: flutter run -d chrome --dart-define=GEMINI_API_KEY=your_key');
+      return _generateLocalReport(summary, childName);
+    }
+
     // Try Gemini API first
     try {
-      print('Trying Gemini API...');
+      print('Trying Gemini API with model: gemini-2.5-flash...');
+
+      final now = DateTime.now();
+      final currentDate = '${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}';
 
       final prompt = '''
 Based on the following daily reports summary for $childName, generate a professional child development report:
 
 $summary
+
+Today's date is $currentDate.
 
 Please generate a comprehensive report that includes:
 1. Overview of observations
@@ -30,6 +44,7 @@ Please generate a comprehensive report that includes:
 
 CRITICAL FORMATTING RULES:
 - Use "$childName" throughout the report
+- Use "$currentDate" as the report date (do NOT write "[Current Date]" or any placeholder)
 - Use only basic ASCII characters
 - Keep it concise - maximum 400 words
 - No markdown headers with # symbols
@@ -41,18 +56,31 @@ CRITICAL FORMATTING RULES:
       var reportText = response.text ?? '';
 
       if (reportText.isNotEmpty) {
-        print('Gemini API success!');
+        print('✅ Gemini API success!');
         return _sanitizeText(reportText, childName);
       }
     } catch (e) {
-      print('Gemini API error: $e');
+      print('❌ Gemini API error: $e');
       
-      // If quota exceeded, use local generation
-      if (e.toString().contains('quota') || 
-          e.toString().contains('exceeded') ||
-          e.toString().contains('rate')) {
-        print('Quota exceeded - using local generation');
+      // Provide clear error messages for common issues
+      final errorStr = e.toString().toLowerCase();
+      if (errorStr.contains('leaked') || errorStr.contains('permission_denied')) {
+        print('🔑 API key was flagged as leaked by Google. Generate a NEW key at:');
+        print('   https://aistudio.google.com/app/apikey');
+        return 'Error: API key has been revoked by Google (leaked key). Please generate a new API key at https://aistudio.google.com/app/apikey and update gemini_service.dart';
+      }
+      
+      if (errorStr.contains('quota') || 
+          errorStr.contains('exceeded') ||
+          errorStr.contains('rate') ||
+          errorStr.contains('resource_exhausted')) {
+        print('⏳ Quota exceeded - using local generation');
         return _generateLocalReport(summary, childName);
+      }
+
+      if (errorStr.contains('forbidden') || errorStr.contains('403')) {
+        print('🚫 API key invalid or disabled');
+        return 'Error: Gemini API key is invalid or disabled. Please check your API key.';
       }
       
       return 'Error generating report: $e';
@@ -132,15 +160,13 @@ Report Generated: $formattedDate
   String _sanitizeText(String text, String childName) {
     var result = text;
 
-    final replacements = {
-      ''': "'", ''': "'", '´': "'", '`': "'",
-      '"': '"', '"': '"', '–': '-', '—': '-',
-      '…': '...', '•': '*', '\u00A0': ' ',
-    };
-
-    replacements.forEach((unicode, ascii) {
-      result = result.replaceAll(unicode, ascii);
-    });
+    // Replace smart quotes and special chars with ASCII equivalents
+    result = result.replaceAll(RegExp(r'[\u2018\u2019\u00B4\u0060]'), "'");
+    result = result.replaceAll(RegExp(r'[\u201C\u201D]'), '"');
+    result = result.replaceAll(RegExp(r'[\u2013\u2014]'), '-');
+    result = result.replaceAll('\u2026', '...');
+    result = result.replaceAll('\u2022', '*');
+    result = result.replaceAll('\u00A0', ' ');
 
     result = result.replaceAll(RegExp(r'^#+\s*', multiLine: true), '');
     result = result.replaceAll(RegExp(r'[^\x00-\x7F]'), '');
