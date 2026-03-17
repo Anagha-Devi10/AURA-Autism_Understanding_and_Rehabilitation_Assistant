@@ -1282,16 +1282,26 @@ def predict():
         symptoms = data.get("symptoms", {})
         chief_complaints = data.get("chief_complaints", "")
 
+        # Create feature dataframe with only numeric behavioral columns
+        # (chief_complaints is text and not used by the current model)
         df = pd.DataFrame([{
             col: 1 if symptoms.get(col, "No") == "Yes" else 0
             for col in behavioral_cols
         }])
 
-        df["Chief_Complaints"] = chief_complaints
+        # Convert to numpy array for model prediction
+        X = df.values
         
-        prediction = model.predict(df)[0]
-
-        recommended_therapies = [THERAPIES[i] for i, val in enumerate(prediction) if int(val) == 1]
+        # Get prediction from model
+        prediction = model.predict(X)
+        
+        # Handle both 1D and 2D predictions
+        if prediction.ndim == 2:
+            prediction = prediction[0]  # Get first row if 2D
+        
+        # prediction should now be a 1D array of binary values (one per therapy)
+        print(f"DEBUG: prediction shape = {prediction.shape}, prediction = {prediction}")
+        recommended_therapies = [THERAPIES[i] for i in range(len(THERAPIES)) if int(prediction[i]) == 1]
         return jsonify({"recommended_therapies": recommended_therapies})
 
     except Exception as e:
